@@ -1,3 +1,9 @@
+"""
+    @author: Jibaku789
+    @version: 1.0
+    @date: December 2023
+"""
+
 import modules.scripts as scripts
 import gradio as gr
 import os
