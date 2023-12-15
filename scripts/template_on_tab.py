@@ -1,6 +1,6 @@
 """
     @author: Jibaku789
-    @version: 1.0
+    @version: 1.1
     @date: December 2023
 """
 
@@ -13,7 +13,10 @@ import numpy as np
 import copy
 import json
 import random
-from PIL import ImageDraw, Image
+import uuid
+from PIL import ImageDraw, Image, ImageFont
+
+import matplotlib.pylab as plt
 
 from modules import script_callbacks
 from modules import devices, images
@@ -24,11 +27,11 @@ class DeepDanbooruWrapper:
 
     def __init__(
         self,
-        minimal_threshold = 0.5,
     ):
 
         self.dd_classifier = DeepDanbooru()
-        self.minimal_threshold = minimal_threshold
+        self.cache = {}
+        self.enable_cache = True
 
     def start(self):
         print("Starting DeepDanboru")
@@ -38,7 +41,11 @@ class DeepDanbooruWrapper:
         print("Stopping DeepDanboru")
         self.dd_classifier.stop()
 
-    def evaluate_model(self, pil_image):
+    def evaluate_model(self, pil_image, image_id="", minimal_threshold=0):
+
+        if self.enable_cache:
+            if image_id and image_id in self.cache:
+                return self.cache[image_id]
 
         # Input image should be 512x512 before reach this point
 
@@ -54,13 +61,16 @@ class DeepDanbooruWrapper:
         probability_dict = {}
         for tag, probability in zip(self.dd_classifier.model.tags, y):
 
-            if probability < self.minimal_threshold:
+            if probability < minimal_threshold:
                 continue
 
             if tag.startswith("rating:"):
                 continue
 
             probability_dict[tag] = probability
+
+        if self.enable_cache:
+            self.cache[image_id] = probability_dict
 
         return probability_dict
 
@@ -73,6 +83,9 @@ class DeepDanbooruObjectDrawer:
         export_directory
     ):
 
+        w, h = pil_image.size
+        self.original_pil_image = self.resize(pil_image, max(w, h))
+        self.rect_pil_image = self.original_pil_image.copy()
         self.pil_image = self.resize(pil_image, 512)
         self.title = title
         self.export_directory = export_directory
@@ -103,15 +116,29 @@ class DeepDanbooruObjectDrawer:
         background.paste(newImg1, (x1, y1))
         return background
 
-    def crop(self, top, left, bottom, right, export=False):
+    def crop(self, top, left, bottom, right, export=False, image_to_use="NORM"):
+        # All values shoud be between 0-512
 
-        x1 = left
-        x2 = right
-        y1 = top
-        y2 = bottom
+        size = 512
+        if image_to_use == "ORIG":
+            size = self.original_pil_image.size[0]
+        elif image_to_use == "RECT":
+            size = self.rect_pil_image.size[0]
 
-        target_size = (512, 512)
-        im1 = self.pil_image.resize(target_size)
+        y1 = int((top/512) * size)
+        x1 = int((left/512) * size)
+        y2 = int((bottom/512) * size)
+        x2 = int((right/512) * size)
+
+        target_size = (size, size)
+
+        if image_to_use == "ORIG":
+            im1 = self.original_pil_image.resize(target_size)
+        elif image_to_use == "RECT":
+            im1 = self.rect_pil_image.resize(target_size)
+        else:
+            im1 = self.pil_image.resize(target_size)
+
         im2 = im1.crop((x1, y1, x2, y2))
 
         background = Image.new('RGB', target_size)
@@ -125,10 +152,11 @@ class DeepDanbooruObjectDrawer:
 
 
     def draw_rect(self, borders, title):
+        # Borders coordinates should be between 0-512
 
-        target_size = (512, 512)
-        im1 = self.pil_image.resize(target_size)
+        im1 = self.rect_pil_image
         draw = ImageDraw.Draw(im1)
+
         color = (
             random.randint(0, 255),
             random.randint(0, 255),
@@ -136,21 +164,33 @@ class DeepDanbooruObjectDrawer:
             0
         )
 
+        font_path = os.path.abspath(os.path.join(__file__, "..", "..", "resources", "Arial.ttf"))
+        line_width = int((im1.size[0]/512) * 1.5)
+        text_width = int((im1.size[0]/512) * 10)
+        font = ImageFont.truetype(font_path, text_width)
+
+        top = int((borders["top"]/512) * im1.size[0])
+        left = int((borders["left"]/512) * im1.size[0])
+        bottom = int((borders["bottom"]/512) * im1.size[0])
+        right = int((borders["right"]/512) * im1.size[0])
+
         draw.rectangle(
             [
-                (borders["left"], borders["top"]), 
-                (borders["right"], borders["bottom"])
+                (left, top), 
+                (right, bottom)
             ],
-            outline=color
+            outline=color,
+            width=line_width
         )
 
         draw.text(
-            (borders["left"], borders["top"]),
+            (left + line_width + 1, top + line_width + 1),
             title,
-            fill=color
+            fill=color,
+            font=font
         )
 
-        self.pil_image = im1
+        self.rect_pil_image = im1
 
 class DeepDanbooruObjectRecognitionNode:
 
@@ -159,10 +199,7 @@ class DeepDanbooruObjectRecognitionNode:
         dd_wrapper,
         pil_image,
         tag,
-        export_directory,
-        steps = 10,
-        subdivisions = 3,
-        tolerance = 0.05
+        export_directory
     ):
         self.dd_wrapper = dd_wrapper
         self.tag = tag
@@ -177,18 +214,210 @@ class DeepDanbooruObjectRecognitionNode:
 
         self.pil_image = self.drawer.pil_image.copy()
 
-        self.steps = steps
-        self.subdivisions = subdivisions
-        self.tolerance = tolerance
+
+    def create_heatmaps(self, kernel_size_x, kernel_size_y, step_x, step_y, minimal_percentage):
+
+        # Headmap approach
+        current_y = 0
+        dots = []
+        bests = []
+
+        while current_y + kernel_size_y < 512:
+
+            current_x = 0
+            x_dots = []
+
+            while current_x + kernel_size_x < 512:
+
+                im1 = self.drawer.crop(
+                    current_y,
+                    current_x,
+                    current_y + kernel_size_y,
+                    current_x + kernel_size_x,
+                    #export=True
+                )
+
+                iid = f'{current_y}-{current_x}-{current_y+kernel_size_y}-{current_x+kernel_size_x}'
+                prob = self.dd_wrapper.evaluate_model(im1, iid)
+
+                if self.tag in prob:
+                    prob = prob[self.tag]
+                else:
+                    prob = 0
+
+                if prob > minimal_percentage:
+                    bests.append(
+                        {
+                            "top": current_y,
+                            "left": current_x,
+                            "bottom": current_y + kernel_size_y,
+                            "right": current_x + kernel_size_x,
+                            "prob": float(prob)
+                        }
+                    )
+
+                print(f"{iid}, {prob}")
+                x_dots.append(prob)
+
+                current_x += step_x
+
+            dots.insert(0, x_dots)
+            current_y += step_y
+
+        with open(f"{self.export_directory}/dots_{self.tag}.json", "w") as _f:
+            _f.write(json.dumps(bests, indent=4))
+
+        dots = np.array(dots)
+
+        # Create heatmap
+        fig, ax = plt.subplots()
+        c = ax.pcolormesh(dots, cmap='gray', vmin=0, vmax=1)
+
+        fig.colorbar(c, ax=None)
+        fig.canvas.draw()
+        
+        image_name = f"{self.export_directory}/heatmap_{self.tag}.png"
+        fig.savefig(image_name, bbox_inches='tight', pad_inches=0)
+
+        # Function to delete duplicates entries
+        def delete_duplicated(bests, axis="X"):
+
+            def merge_pair(iterable_bounces, axis, i, j):
+
+                border = iterable_bounces[i]
+                other_border = iterable_bounces[j]
+                new_border = {}
+
+                new_border = {
+                    "top": min(border["top"], other_border["top"]),
+                    "left": min(border["left"], other_border["left"]),
+                    "bottom": max(border["bottom"], other_border["bottom"]),
+                    "right": max(border["right"], other_border["right"]),
+                    "prob": max(border["prob"], other_border["prob"])
+                }
+
+                return new_border
+
+            pairs = ["x"]
+            iterable_bounces = bests
+            while pairs:
+
+                pairs = []
+
+                for i in range(0, len(iterable_bounces)):
+                    for j in range(i+1, len(iterable_bounces)):
+
+                        border = iterable_bounces[i]
+                        other_border = iterable_bounces[j]
+
+                        if axis == "X":
+
+                            # Border inside the limits of the new one
+                            if other_border["left"] > border["left"] and \
+                               other_border["left"] < border["right"]:
+
+                                if other_border["top"] > border["top"]  and \
+                                   other_border["top"] < border["bottom"]:
+                                    continue
+
+                                if i+1 == j:
+                                    my_pair = list(sorted([i, j]))
+                                    if my_pair not in pairs:
+                                        pairs.append(my_pair) 
+                        else:
+
+                            # Border inside the limits of the new one
+                            if other_border["top"] > border["top"]  and \
+                               other_border["top"] < border["bottom"]:
+
+                                if other_border["left"] > border["left"] and \
+                                   other_border["left"] < border["right"]:
+                                    continue
+
+                                if i+1 == j:
+                                    my_pair = list(sorted([i, j]))
+                                    if my_pair not in pairs:
+                                        pairs.append(my_pair) 
+
+                # Merge the pairs
+                #print(json.dumps(iterable_bounces, indent=4))
+                #print(pairs)
+                if pairs:
+
+                    new_iterable = []
+                    current_pair = []
+
+                    for pair in pairs:
+
+                        if not current_pair:
+                            current_pair = [pair[0], pair[1]]
+                            continue
+
+                        if pair[0] == current_pair[1]:
+                            current_pair[1] = pair[1]
+                            continue
+
+                        new_border = merge_pair(iterable_bounces, axis, current_pair[0], current_pair[1])
+                        new_iterable.append(new_border)
+                        current_pair = [pair[0], pair[1]]
+
+                    if current_pair:
+                        new_border = merge_pair(iterable_bounces, axis, current_pair[0], current_pair[1])
+                        new_iterable.append(new_border)
+
+                    # Add missing number
+                    for i in range(0, len(iterable_bounces)):
+
+                        found = False
+                        for pair in pairs:
+                            if i in pair:
+                                found = True
+                                break
+
+                        if not found:
+                            new_iterable.append(iterable_bounces[i])
+
+                    # Sort new list
+                    if axis == "X":
+                        new_iterable = sorted(
+                            new_iterable, key = lambda x: x["left"]
+                        )
+                    else:
+                        new_iterable = sorted(
+                            new_iterable, key = lambda x: x["top"]
+                        )
+
+                    iterable_bounces = new_iterable
+
+            return iterable_bounces
+
+        bests = delete_duplicated(bests, axis="X")
+        bests = delete_duplicated(bests, axis="Y")
+
+        c = 0
+        for best in bests:
+            c += 1
+            self.drawer.title = f"Best_{c}_{self.tag}"
+            self.drawer.crop(
+                best["top"],
+                best["left"],
+                best["bottom"],
+                best["right"],
+                export=True,
+                image_to_use="ORIG"
+            )
+
+        print(bests)
+        return bests
 
 
-    def rect_tag(self):
+    def rect_tag(self, steps = 10, subdivisions = 3, tolerance = 0.05):
 
         # Init prob
         print(f"Evaluating: {self.tag}")
 
         im0 = self.drawer.crop(0, 0, 512, 512)
-        initial_prob = self.dd_wrapper.evaluate_model(im0)
+        initial_prob = self.dd_wrapper.evaluate_model(im0, "0-0-512-512")
 
         if self.tag not in initial_prob:
             return None
@@ -205,7 +434,7 @@ class DeepDanbooruObjectRecognitionNode:
         best_prob = initial_prob
         best_status = copy.deepcopy(current_borders)
 
-        for s in range(0, self.steps):
+        for s in range(0, steps):
 
             # Calculate proportions
             changed = False
@@ -214,10 +443,10 @@ class DeepDanbooruObjectRecognitionNode:
             y_diff = current_borders["bottom"] - current_borders["top"]
 
             propotions = {
-                "top": int(current_borders["top"] + (y_diff * ((self.subdivisions-1)/self.subdivisions))),
-                "left": int(current_borders["left"] + (x_diff * ((self.subdivisions-1)/self.subdivisions))),
-                "bottom": int(current_borders["bottom"] - (y_diff * ((self.subdivisions-1)/self.subdivisions))),
-                "right": int(current_borders["right"] - (x_diff * ((self.subdivisions-1)/self.subdivisions)))
+                "top": int(current_borders["top"] + (y_diff * ((subdivisions-1)/subdivisions))),
+                "left": int(current_borders["left"] + (x_diff * ((subdivisions-1)/subdivisions))),
+                "bottom": int(current_borders["bottom"] - (y_diff * ((subdivisions-1)/subdivisions))),
+                "right": int(current_borders["right"] - (x_diff * ((subdivisions-1)/subdivisions)))
             }
 
             print(current_borders)
@@ -260,17 +489,17 @@ class DeepDanbooruObjectRecognitionNode:
                     border["top"],
                     border["left"],
                     border["bottom"],
-                    border["right"],
-                    export=False
+                    border["right"]
                 )
 
-                prob = self.dd_wrapper.evaluate_model(im1)
+                iid = f'{border["top"]}-{border["left"]}-{border["bottom"]}-{border["right"]}'
+                prob = self.dd_wrapper.evaluate_model(im1, iid)
                 if self.tag in prob:
                     prob = prob[self.tag]
                 else:
                     prob = 0
 
-                if (prob - best_prob) + self.tolerance > 0:
+                if (prob - best_prob) + tolerance > 0:
 
                     best_status = copy.deepcopy(border)
                     best_prob = prob
@@ -305,147 +534,12 @@ class DeepDanbooruObjectRecognitionNode:
             best_status["left"],
             best_status["bottom"],
             best_status["right"],
-            export=True
+            export=True,
+            image_to_use="ORIG"
         )
 
         print(f"Evaluating: {values}")
-        return values
-
-    def rect_tag2(self):
-
-        # Init prob
-        print(f"Evaluating: {self.tag}")
-
-        im1 = self.drawer.crop(0, 0, 512, 512)
-        initial_prob = self.dd_wrapper.evaluate_model(im1)
-
-        if self.tag not in initial_prob:
-            return None
-
-        initial_prob = initial_prob[self.tag]
-
-        status = {
-            "top": {
-                "pos": 0,
-                "last": initial_prob,
-                "ban": False
-            },
-            "left": {
-                "pos": 0,
-                "last": initial_prob,
-                "ban": False
-            },
-            "bottom": {
-                "pos": 512,
-                "last": initial_prob,
-                "ban": False
-            },
-            "right": {
-                "pos": 512,
-                "last": initial_prob,
-                "ban": False
-            }
-        }
-
-        best_prob = initial_prob
-        best_status = copy.deepcopy(status)
-
-        im1 = self.drawer.crop(
-            status["top"]["pos"],
-            status["left"]["pos"],
-            status["bottom"]["pos"],
-            status["right"]["pos"]
-        )
-
-        count = -1
-
-        while (status["top"]["pos"] < status["bottom"]["pos"]) and \
-              (status["left"]["pos"] < status["right"]["pos"]): 
-
-            count += 1
-
-            if status["top"]["ban"] and \
-               status["left"]["ban"] and \
-               status["bottom"]["ban"] and \
-               status["right"]["ban"]:
-                # Best found
-                break
-
-            to_change_pos = list(status.keys())[int(count % 4)]
-            to_change_mini_status = status[to_change_pos]
-
-            if to_change_mini_status["ban"]:
-                continue
-
-            # Update to compare
-            if to_change_pos in ["top", "left"]:
-                to_change_mini_status["pos"] += self.step
-            else:
-                to_change_mini_status["pos"] -= self.step
-
-            # Evaluate
-            im1 = self.drawer.crop(
-                status["top"]["pos"],
-                status["left"]["pos"],
-                status["bottom"]["pos"],
-                status["right"]["pos"]
-            )
-
-            prob = self.dd_wrapper.evaluate_model(im1)
-            if self.tag in prob:
-                prob = prob[self.tag]
-            else:
-                prob = 0
-
-            if (prob - to_change_mini_status["last"])+0.05 > 0:
-
-                if prob > best_prob:
-                    best_prob = prob
-                    best_status = copy.deepcopy(status)
-
-                to_change_mini_status["last"] = prob
-
-            else:
-
-                # Restore previos values and ban
-                if to_change_pos in ["top", "left"]:
-                    to_change_mini_status["pos"] -= self.step
-                else:
-                    to_change_mini_status["pos"] += self.step
-
-                to_change_mini_status["ban"] = True
-
-            print('Debug: [{}, {}, {}, {}], {} vs {}, [{}, {}, {}, {}]'.format(
-                  status["top"]["pos"],
-                  status["left"]["pos"],
-                  status["bottom"]["pos"],
-                  status["right"]["pos"],
-                  prob, best_prob, 
-                  status["top"]["ban"],
-                  status["left"]["ban"],
-                  status["bottom"]["ban"],
-                  status["right"]["ban"]
-            ))
-
-        # Condensate
-        values = {
-            "top": int( (best_status["top"]["pos"]/512) * self.pil_image.size[0]), 
-            "left": int( (best_status["left"]["pos"]/512) * self.pil_image.size[1]),
-            "bottom": int( (best_status["bottom"]["pos"]/512) * self.pil_image.size[0]),
-            "right": int( (best_status["right"]["pos"]/512) * self.pil_image.size[1]),
-            "prob": best_prob,
-        }
-
-        self.drawer.title = f"Best_{self.tag}"
-        self.drawer.crop(
-            best_status["top"]["pos"],
-            best_status["left"]["pos"],
-            best_status["bottom"]["pos"],
-            best_status["right"]["pos"]
-        )
-
-        print(f"Evaluating: {values}")
-        return values
+        return [values]
 
 
 class DeepDanbooruObjectRecognitionUtil:
@@ -454,29 +548,25 @@ class DeepDanbooruObjectRecognitionUtil:
         self, 
         pil_image,
         minimal_threshold = 0.5,
-        max_display = 10,
-        steps = 10,
-        subdivisions = 3,
-        tolerance = 0.05
+        max_display = 10
     ):
 
-        self.dd_wrapper = DeepDanbooruWrapper(
-            minimal_threshold,
-        )
+        self.dd_wrapper = DeepDanbooruWrapper()
 
+        self.minimal_threshold = minimal_threshold
         self.pil_image = pil_image
         self.max_display = int(max_display)
-        self.steps = steps
-        self.subdivisions = subdivisions
-        self.tolerance = tolerance
+        self.request_uuid = str(uuid.uuid1())
 
         self.export_directory = os.path.join(shared.opts.outdir_extras_samples, "ddor")
         if not os.path.exists(self.export_directory):
             os.makedirs(self.export_directory)
 
-    def create_rects(self, tags):
+        self.export_directory = os.path.join(self.export_directory, self.request_uuid)
+        if not os.path.exists(self.export_directory):
+            os.makedirs(self.export_directory)
 
-        figures = {}
+    def create_heatmaps_util(self, tags, kernel_x, kernel_y, step_x, step_y, minimal_percentage):
 
         self.drawer = DeepDanbooruObjectDrawer(
             self.pil_image.copy(),
@@ -493,21 +583,56 @@ class DeepDanbooruObjectRecognitionUtil:
                 self.dd_wrapper,
                 self.pil_image,
                 tag.strip(),
-                export_directory = self.export_directory,
-                steps = self.steps,
-                subdivisions = self.subdivisions
+                export_directory = self.export_directory
             )
 
-            figure = dd_node.rect_tag()
-            figures[tag] = figure
+            figures = dd_node.create_heatmaps(
+                kernel_x,
+                kernel_y,
+                step_x,
+                step_y,
+                minimal_percentage
+            )
 
-            if not figure:
+            if not figures:
                 continue
 
-            self.drawer.draw_rect(figure, f"{tag.strip()}-{figure['prob']}")
+            for figure in figures:
+                self.drawer.draw_rect(figure, f"{tag.strip()}:\n{figure['prob']:.3f}")
 
-        self.drawer.crop(0,0,512,512, export=True)
-        return self.drawer.pil_image
+        self.drawer.crop(0,0,512,512, export=True, image_to_use="RECT")
+        return self.drawer.rect_pil_image
+
+    def create_rects(self, tags, steps, subdivisions, tolerance):
+
+        self.drawer = DeepDanbooruObjectDrawer(
+            self.pil_image.copy(),
+            f"Result-{time.time()}",
+            self.export_directory
+        )
+
+        for tag in tags.split(","):
+
+            if not tag.strip():
+                continue
+
+            dd_node = DeepDanbooruObjectRecognitionNode(
+                self.dd_wrapper,
+                self.pil_image,
+                tag.strip(),
+                export_directory = self.export_directory
+            )
+
+            figures = dd_node.rect_tag(steps, subdivisions, tolerance)
+
+            if not figures:
+                continue
+
+            for figure in figures:
+                self.drawer.draw_rect(figure, f"{tag.strip()}:{figure['prob']}")
+
+        self.drawer.crop(0,0,512,512, export=True, image_to_use="RECT")
+        return self.drawer.rect_pil_image
 
     # Core Methods
     def extract_tags(self):
@@ -515,7 +640,7 @@ class DeepDanbooruObjectRecognitionUtil:
         tag_probs = {}
 
         print("Extracting all tags")
-        model_tags = self.dd_wrapper.evaluate_model(self.pil_image)
+        model_tags = self.dd_wrapper.evaluate_model(self.pil_image, "extract", self.minimal_threshold)
         model_tags = dict(sorted(model_tags.items(), key=lambda x: -x[1])[0:self.max_display])
         print(json.dumps(str(model_tags), indent=4))
         model_tags = list(model_tags.keys())
@@ -556,7 +681,20 @@ class DeepDanbooruObjectRecognitionScript():
                         self.subdivisions = gr.Number(value=3, label="subdivisions", elem_id="subdivisions_ui", minimum=3, maximum=50)
                         self.tolerance = gr.Number(value=0.05, label="tolerance", elem_id="tolerance_ui", minimum=0, maximum=1)
 
-                    self.evaluate_btn = gr.Button(value="Evaluate", elem_id="evaluete_btn")
+                    self.evaluate_btn = gr.Button(value="Evaluate Method 1", elem_id="evaluete_btn")
+
+                    with gr.Row():
+                        self.kernel_x = gr.Number(value=64, label="Kernel X", elem_id="kernel_x", minimum=8, maximum=512)
+                        self.kernel_y = gr.Number(value=64, label="Kernel Y", elem_id="kernel_y", minimum=8, maximum=512)
+
+                    with gr.Row():
+                        self.step_x = gr.Number(value=32, label="Step X", elem_id="step_x", minimum=8, maximum=512)
+                        self.step_y = gr.Number(value=32, label="Step Y", elem_id="step_y", minimum=8, maximum=512)
+                    
+                    with gr.Row():
+                        self.minimal_percentage = gr.Number(value=0.85, label="minimal_percentage", elem_id="minimal_percentage_ui", minimum=0, maximum=1)
+
+                    self.evaluate_m2_btn = gr.Button(value="Evaluate Method 2", elem_id="evaluete_m2_btn")
 
                 with gr.Column(scale=1, elem_classes="result-image-col"):
                     self.result_image = gr.Image(type="pil", label="Result Image", interactive=False, elem_id="result_image")
@@ -565,6 +703,7 @@ class DeepDanbooruObjectRecognitionScript():
                 self.log_label = gr.Label(value="", label="Error", elem_id="log_label")
 
             self.evaluate_btn.click(self.ui_click, inputs=[self.source_image, self.tags, self.threshold_ui, self.steps, self.subdivisions, self.tolerance], outputs=[self.result_image, self.log_label])
+            self.evaluate_m2_btn.click(self.ui_click_m2, inputs=[self.source_image, self.tags, self.kernel_x, self.kernel_y, self.step_x, self.step_y, self.minimal_percentage], outputs=[self.result_image, self.log_label])
             self.interrogate_btn.click(self.ui_interrogate, inputs=[self.source_image, self.threshold_ui, self.max_display], outputs=[self.tags, self.log_label])
             return [(ui_component, "DeepDanboru Object Recognition", "deepdanboru_object_recg_tab")]
 
@@ -585,7 +724,7 @@ class DeepDanbooruObjectRecognitionScript():
         tag_probs = dd_util.extract_tags()
         dd_util.dd_wrapper.stop()
 
-        return ", ".join(tag_probs), "Complete"
+        return ", ".join(tag_probs), f"Complete request"
 
 
     def ui_click(self, source_image_PIL, tags, threshold_ui, steps, subdivisions, tolerance):
@@ -595,18 +734,42 @@ class DeepDanbooruObjectRecognitionScript():
             return None, "No source image found"
 
         dd_util = DeepDanbooruObjectRecognitionUtil(
-            source_image_PIL,
-            minimal_threshold=threshold_ui,
-            steps=int(steps), 
-            subdivisions=int(subdivisions),
-            tolerance=tolerance
+            source_image_PIL
         )
 
         dd_util.dd_wrapper.start()
-        result_image_PIL = dd_util.create_rects(tags)
+        result_image_PIL = dd_util.create_rects(
+            tags,
+            int(steps),
+            int(subdivisions),
+            tolerance
+        )
         dd_util.dd_wrapper.stop()
 
-        return result_image_PIL, "Complete"
+        return result_image_PIL, f"Complete request: extra-images/ddor/{dd_util.request_uuid}"
+
+    def ui_click_m2(self, source_image_PIL, tags, kernel_x, kernel_y, step_x, step_y, minimal_percentage):
+
+        # Init result image
+        if not source_image_PIL:
+            return None, "No source image found"
+
+        dd_util = DeepDanbooruObjectRecognitionUtil(
+            source_image_PIL
+        )
+
+        dd_util.dd_wrapper.start()
+        result_image_PIL = dd_util.create_heatmaps_util(
+            tags,
+            int(kernel_x),
+            int(kernel_y),
+            int(step_x),
+            int(step_y),
+            minimal_percentage
+        )
+        dd_util.dd_wrapper.stop()
+
+        return result_image_PIL, f"Complete request: extra-images/ddor/{dd_util.request_uuid}"
 
 
 ddors = DeepDanbooruObjectRecognitionScript()
