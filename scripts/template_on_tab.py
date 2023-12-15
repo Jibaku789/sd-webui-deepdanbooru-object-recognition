@@ -1,6 +1,6 @@
 """
     @author: Jibaku789
-    @version: 1.1
+    @version: 1.2
     @date: December 2023
 """
 
