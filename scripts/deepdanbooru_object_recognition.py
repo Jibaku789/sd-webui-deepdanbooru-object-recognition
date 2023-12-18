@@ -1,6 +1,6 @@
 """
     @author: Jibaku789
-    @version: 1.2
+    @version: 1.2.1
     @date: December 2023
 """
 
@@ -582,7 +582,7 @@ class DeepDanbooruObjectRecognitionUtil:
             dd_node = DeepDanbooruObjectRecognitionNode(
                 self.dd_wrapper,
                 self.pil_image,
-                tag.strip(),
+                tag.strip().replace(" ", "_"),
                 export_directory = self.export_directory
             )
 
@@ -598,7 +598,7 @@ class DeepDanbooruObjectRecognitionUtil:
                 continue
 
             for figure in figures:
-                self.drawer.draw_rect(figure, f"{tag.strip()}:\n{figure['prob']:.3f}")
+                self.drawer.draw_rect(figure, f"{tag.strip().replace('_', ' ')}:\n{figure['prob']:.3f}")
 
         self.drawer.crop(0,0,512,512, export=True, image_to_use="RECT")
         return self.drawer.rect_pil_image
@@ -619,7 +619,7 @@ class DeepDanbooruObjectRecognitionUtil:
             dd_node = DeepDanbooruObjectRecognitionNode(
                 self.dd_wrapper,
                 self.pil_image,
-                tag.strip(),
+                tag.strip().replace(" ", "_"),
                 export_directory = self.export_directory
             )
 
@@ -629,7 +629,7 @@ class DeepDanbooruObjectRecognitionUtil:
                 continue
 
             for figure in figures:
-                self.drawer.draw_rect(figure, f"{tag.strip()}:{figure['prob']}")
+                self.drawer.draw_rect(figure, f"{tag.strip().replace('_', ' ')}:{figure['prob']}")
 
         self.drawer.crop(0,0,512,512, export=True, image_to_use="RECT")
         return self.drawer.rect_pil_image
@@ -774,3 +774,5 @@ class DeepDanbooruObjectRecognitionScript():
 
 ddors = DeepDanbooruObjectRecognitionScript()
 script_callbacks.on_ui_tabs(ddors.on_ui_tabs)
+
+# end of file
