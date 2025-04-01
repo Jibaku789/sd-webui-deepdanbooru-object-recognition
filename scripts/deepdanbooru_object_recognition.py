@@ -1,7 +1,7 @@
 """
     @author: Jibaku789
-    @version: 1.2.1
-    @date: December 2023
+    @version: 1.2.2
+    @date: March 2025
 """
 
 import modules.scripts as scripts
@@ -36,6 +36,7 @@ class DeepDanbooruWrapper:
     def start(self):
         print("Starting DeepDanboru")
         self.dd_classifier.start()
+        self.dd_classifier.model = self.dd_classifier.model.to(devices.device)
 
     def stop(self):
         print("Stopping DeepDanboru")
@@ -48,14 +49,14 @@ class DeepDanbooruWrapper:
                 return self.cache[image_id]
 
         # Input image should be 512x512 before reach this point
-
         pic = images.resize_image(0, pil_image.convert("RGB"), 512, 512)
 
-        #pic = pil_image.convert("RGB")
         a = np.expand_dims(np.array(pic, dtype=np.float32), 0) / 255
 
         with torch.no_grad(), devices.autocast():
             x = torch.from_numpy(a).to(devices.device)
+            model_dtype = next(self.dd_classifier.model.parameters()).dtype
+            x = x.to(dtype=model_dtype)
             y = self.dd_classifier.model(x)[0].detach().cpu().numpy()
 
         probability_dict = {}
