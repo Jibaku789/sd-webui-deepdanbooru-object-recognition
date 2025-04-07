@@ -648,6 +648,11 @@ class DeepDanbooruObjectRecognitionUtil:
 
         return model_tags
 
+
+def element_id_prefix(element_id):
+    return f'deepdanbooru_object_recognition_{element_id}'
+
+
 class DeepDanbooruObjectRecognitionScript():
 
     def __init__(self):
@@ -666,42 +671,42 @@ class DeepDanbooruObjectRecognitionScript():
             with gr.Row():
 
                 with gr.Column(scale=1, elem_classes="source-image-col"):
-                    self.source_image = gr.Image(type="pil", label="Source Image", interactive=True, elem_id="source_image")
+                    self.source_image = gr.Image(type="pil", label="Source Image", interactive=True, elem_id=element_id_prefix("source_image"))
 
                 with gr.Column(scale=1, elem_classes="other elements"):
 
                     with gr.Row():
-                        self.threshold_ui = gr.Number(value=0.5, label="Threshold", elem_id="threshold_ui", minimum=0, maximum=1)
-                        self.max_display = gr.Number(value=10, label="Max to display on interrogate", elem_id="max_display_ui", minimum=1, maximum=100)
+                        self.threshold_ui = gr.Number(value=0.5, label="Threshold", elem_id=element_id_prefix("threshold_ui"), minimum=0, maximum=1)
+                        self.max_display = gr.Number(value=10, label="Max to display on interrogate", elem_id=element_id_prefix("max_display_ui"), minimum=1, maximum=100)
 
-                    self.interrogate_btn = gr.Button(value="Interrogate", elem_id="interrogate_btn")
-                    self.tags = gr.Textbox(value="1girl", label="Found tags", elem_id="tags_txt")
-
-                    with gr.Row():
-                        self.steps = gr.Number(value=10, label="steps", elem_id="steps_ui", minimum=5, maximum=100)
-                        self.subdivisions = gr.Number(value=3, label="subdivisions", elem_id="subdivisions_ui", minimum=3, maximum=50)
-                        self.tolerance = gr.Number(value=0.05, label="tolerance", elem_id="tolerance_ui", minimum=0, maximum=1)
-
-                    self.evaluate_btn = gr.Button(value="Evaluate Method 1", elem_id="evaluete_btn")
+                    self.interrogate_btn = gr.Button(value="Interrogate", elem_id=element_id_prefix("interrogate_btn"))
+                    self.tags = gr.Textbox(value="1girl", label="Found tags", elem_id=element_id_prefix("tags_txt"))
 
                     with gr.Row():
-                        self.kernel_x = gr.Number(value=64, label="Kernel X", elem_id="kernel_x", minimum=8, maximum=512)
-                        self.kernel_y = gr.Number(value=64, label="Kernel Y", elem_id="kernel_y", minimum=8, maximum=512)
+                        self.steps = gr.Number(value=10, label="steps", elem_id=element_id_prefix("steps_ui"), minimum=5, maximum=100)
+                        self.subdivisions = gr.Number(value=3, label="subdivisions", elem_id=element_id_prefix("subdivisions_ui"), minimum=3, maximum=50)
+                        self.tolerance = gr.Number(value=0.05, label="tolerance", elem_id=element_id_prefix("tolerance_ui"), minimum=0, maximum=1)
+
+                    self.evaluate_btn = gr.Button(value="Evaluate Method 1", elem_id=element_id_prefix("evaluete_btn"))
 
                     with gr.Row():
-                        self.step_x = gr.Number(value=32, label="Step X", elem_id="step_x", minimum=8, maximum=512)
-                        self.step_y = gr.Number(value=32, label="Step Y", elem_id="step_y", minimum=8, maximum=512)
+                        self.kernel_x = gr.Number(value=64, label="Kernel X", elem_id=element_id_prefix("kernel_x"), minimum=8, maximum=512)
+                        self.kernel_y = gr.Number(value=64, label="Kernel Y", elem_id=element_id_prefix("kernel_y"), minimum=8, maximum=512)
+
+                    with gr.Row():
+                        self.step_x = gr.Number(value=32, label="Step X", elem_id=element_id_prefix("step_x"), minimum=8, maximum=512)
+                        self.step_y = gr.Number(value=32, label="Step Y", elem_id=element_id_prefix("step_y"), minimum=8, maximum=512)
                     
                     with gr.Row():
-                        self.minimal_percentage = gr.Number(value=0.85, label="minimal_percentage", elem_id="minimal_percentage_ui", minimum=0, maximum=1)
+                        self.minimal_percentage = gr.Number(value=0.85, label="minimal_percentage", elem_id=element_id_prefix("minimal_percentage_ui"), minimum=0, maximum=1)
 
-                    self.evaluate_m2_btn = gr.Button(value="Evaluate Method 2", elem_id="evaluete_m2_btn")
+                    self.evaluate_m2_btn = gr.Button(value="Evaluate Method 2", elem_id=element_id_prefix("evaluete_m2_btn"))
 
                 with gr.Column(scale=1, elem_classes="result-image-col"):
-                    self.result_image = gr.Image(type="pil", label="Result Image", interactive=False, elem_id="result_image")
+                    self.result_image = gr.Image(type="pil", label="Result Image", interactive=False, elem_id=element_id_prefix("result_image"))
 
             with gr.Row():
-                self.log_label = gr.Label(value="", label="Error", elem_id="log_label")
+                self.log_label = gr.Label(value="", label="Error", elem_id=element_id_prefix("log_label"))
 
             self.evaluate_btn.click(self.ui_click, inputs=[self.source_image, self.tags, self.threshold_ui, self.steps, self.subdivisions, self.tolerance], outputs=[self.result_image, self.log_label])
             self.evaluate_m2_btn.click(self.ui_click_m2, inputs=[self.source_image, self.tags, self.kernel_x, self.kernel_y, self.step_x, self.step_y, self.minimal_percentage], outputs=[self.result_image, self.log_label])
